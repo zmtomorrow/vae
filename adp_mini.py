@@ -13,12 +13,34 @@ def yoadam(params: List[Tensor],
          state_steps: List[int],
          beta1: float,
          beta2: float,
-         lr: float,
+         eta: float,
+         f_x: float,
+         f_star: float,
          weight_decay: float,
          eps: float):
-    r"""Functional API that performs Adam algorithm computation.
-    See :class:`~torch.optim.Adam` for details.
-    """
+
+    gTg = 0
+    for i, param in enumerate(params):
+
+        grad = grads[i]
+        exp_avg = exp_avgs[i]
+        exp_avg_sq = exp_avg_sqs[i]
+        step = state_steps[i]
+
+        bias_correction1 = 1 - beta1 ** step
+        bias_correction2 = 1 - beta2 ** step
+
+        if weight_decay != 0:
+            grad = grad.add(param, alpha=weight_decay)
+
+        exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+        gTg += torch.sum(exp_avg**2)
+        
+
+    delta = 2.* (f_x-f_star) / (0.1+gTg)
+    lr = min(delta, eta)
+    lr = max(0.0,lr)
+
 
     for i, param in enumerate(params):
 
@@ -33,20 +55,11 @@ def yoadam(params: List[Tensor],
         if weight_decay != 0:
             grad = grad.add(param, alpha=weight_decay)
 
-        # Decay the first and second moment running average coefficient
         exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
-#         exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
-#         if amsgrad:
-#             # Maintains the maximum of all 2nd moment running avg. till now
-#             torch.maximum(max_exp_avg_sqs[i], exp_avg_sq, out=max_exp_avg_sqs[i])
-#             # Use the max. for normalizing running avg. of gradient
-#             denom = (max_exp_avg_sqs[i].sqrt() / math.sqrt(bias_correction2)).add_(eps)
-#         else:
-#             denom = (exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(eps)
 
-#         step_size = lr / bias_correction1
-
-        param.addcdiv_(exp_avg, torch.tensor(1.), value=-lr)
+        param.addcdiv_(exp_avg, torch.tensor(1.).cuda(), value=-lr)
+    
+    return gTg,lr
     
 class Adam_adp(Optimizer):
     r"""Implements Adam algorithm.
@@ -119,10 +132,8 @@ class Adam_adp(Optimizer):
             max_exp_avg_sqs = []
             state_steps = []
 
-            gTg = 0
             for p in group['params']:
                 if p.grad is not None:
-                    gTg += torch.sum(p.grad**2)
                     params_with_grad.append(p)
                     if p.grad.is_sparse:
                         raise RuntimeError('Adam does not support sparse gradients, please consider SparseAdam instead')
@@ -148,13 +159,7 @@ class Adam_adp(Optimizer):
 
             beta1, beta2 = group['betas']
             
-            
-            eta = group['eta']
-                
-            delta = 2.* (f_x-group['f_star']) / (0.01+gTg)
-            lr = min(delta, eta)
-            
-            yoadam(params_with_grad,
+            delta, lr= yoadam(params_with_grad,
                    grads,
                    exp_avgs,
                    exp_avg_sqs,
@@ -162,10 +167,10 @@ class Adam_adp(Optimizer):
                    state_steps,
                    beta1,
                    beta2,
-                   lr,
+                   group['eta'],
+                   f_x,
+                   group['f_star'],
                    group['weight_decay'],
                    group['eps'])
-        return loss,lr
-    
-    
+        return delta,lr
     
